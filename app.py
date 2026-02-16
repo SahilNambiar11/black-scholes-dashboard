@@ -17,7 +17,7 @@ from analysis.sensitivity_grid import generate_price_grid
 # Page setup
 # ----------------------------
 st.set_page_config(page_title="Black–Scholes Dashboard", layout="wide")
-st.title("Black–Scholes Option Dashboard")
+st.title("Options Research Dashboard")
 
 # ----------------------------
 # Create tabs for navigation
