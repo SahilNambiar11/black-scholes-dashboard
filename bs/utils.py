@@ -53,9 +53,9 @@ def calculate_normpdf(x):
     """
     return norm.pdf(x)
 
-def monte_carlo_pricing(S0, r, sigma, T, strikes, N, M):
+def monte_carlo_pricing(S0, r, sigma, T, strikes, N, M, seed=None):
     """
-    Monte Carlo option pricing using geometric Brownian motion.
+    Fast Monte Carlo option pricing using fully vectorized geometric Brownian motion.
     
     Parameters
     ----------
@@ -73,46 +73,43 @@ def monte_carlo_pricing(S0, r, sigma, T, strikes, N, M):
         Number of time steps
     M : int
         Number of simulations (Monte Carlo paths)
+    seed : int, optional
+        Random seed for reproducibility
     
     Returns
     -------
     dict
-        Dictionary with keys:
         - 'strikes': input strikes
-        - 'prices': array of European call option prices for each strike
-        - 'std_errors': standard errors of the estimates
+        - 'prices': European call option prices
+        - 'std_errors': standard errors
         - 'paths': simulated stock price paths (M x N+1)
-        - 'final_prices': final stock prices from all M simulations (M,)
+        - 'final_prices': final stock prices (M,)
     """
-    strikes = np.asarray(strikes, dtype=float)
+    if seed is not None:
+        np.random.seed(seed)
     
-    # Time step
+    strikes = np.asarray(strikes, dtype=float)
     dt = T / N
     
-    # Generate M paths with N+1 time points (including t=0)
-    # Shape: (M, N+1)
-    dW = np.random.standard_normal(size=(M, N))  # (M, N) random increments
+    # Generate all random increments at once
+    dW = np.random.standard_normal((M, N))
+    increments = (r - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * dW
     
-    # Initialize paths at t=0
-    paths = np.zeros((M, N + 1))
-    paths[:, 0] = S0
+    # Compute log of stock prices using cumulative sum
+    log_paths = np.cumsum(increments, axis=1)
+    log_paths = np.hstack([np.zeros((M, 1)), log_paths])  # Include initial price
     
-    # Simulate geometric Brownian motion: dS = r*S*dt + sigma*S*dW
-    for t in range(N):
-        paths[:, t + 1] = paths[:, t] * np.exp((r - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * dW[:, t])
+    # Convert log paths to price paths
+    paths = S0 * np.exp(log_paths)
     
-    # Final stock prices at maturity
-    final_prices = paths[:, -1]  # Shape: (M,)
+    final_prices = paths[:, -1]
     
-    # Compute European call option prices at maturity: max(S_T - K, 0)
-    # Shape: (len(strikes), M)
+    # Compute payoffs for European calls
     payoffs = np.maximum(final_prices[np.newaxis, :] - strikes[:, np.newaxis], 0)
     
-    # Discount back to present value
-    option_prices = np.exp(-r * T) * np.mean(payoffs, axis=1)  # Shape: (len(strikes),)
-    
-    # Compute standard errors
-    std_errors = np.std(payoffs, axis=1) / np.sqrt(M) * np.exp(-r * T)
+    # Discounted option prices and standard errors
+    option_prices = np.exp(-r * T) * np.mean(payoffs, axis=1)
+    std_errors = np.exp(-r * T) * np.std(payoffs, axis=1) / np.sqrt(M)
     
     return {
         'strikes': strikes,
