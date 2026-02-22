@@ -22,7 +22,7 @@ st.title("Options Research Dashboard")
 # ----------------------------
 # Create tabs for navigation
 # ----------------------------
-tab_bs, tab_mc = st.tabs(["Black–Scholes", "Monte Carlo"])
+tab_bs, tab_mc, tab_ml = st.tabs(["Black–Scholes", "Monte Carlo", "RL Hedging (ML)"])
 
 # ============================
 # BLACK-SCHOLES TAB
@@ -442,3 +442,37 @@ with tab_mc:
         - Monte Carlo error inherent; Black-Scholes is exact for European options
         """)
 
+# ============================
+# RL HEDGING (ML) TAB
+# ============================
+with tab_ml:
+    st.header("RL Hedging Strategy")
+
+    st.subheader("1) Simulation Parameters")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        rl_S0 = st.number_input("Spot Price ($)", min_value=0.01, value=100.0, key="rl_s0")
+        rl_K = st.number_input("Strike Price ($)", min_value=0.01, value=105.0, key="rl_k")
+    with col2:
+        rl_T = st.number_input("Time Horizon (Years)", min_value=0.01, value=0.25, key="rl_t")
+        rl_sigma = st.number_input("Volatility (%)", min_value=0.01, value=20.0, key="rl_sigma") / 100
+    with col3:
+        rl_r = st.number_input("Risk-free Rate (%)", value=5.0, key="rl_r") / 100
+        rl_option_type = st.selectbox("Option Type", ["call", "put"], key="rl_option_type")
+
+    st.subheader("2) Strategy Engine Controls")
+    rl_strategy_mode = st.selectbox(
+        "Strategy Mode",
+        [
+            "Classical Hedging Benchmark",
+            "RL Hedging Agent",
+            "Comparison Mode",
+        ],
+        index=2,
+        key="rl_strategy_mode",
+    )
+
+    st.markdown("**Visualization Mode**")
+    rl_show_path = st.checkbox("Path trajectory plot", value=True, key="rl_show_path")
+    rl_show_hedge = st.checkbox("Hedge ratio evolution", value=True, key="rl_show_hedge")
+    rl_show_perf = st.checkbox("Performance summary", value=True, key="rl_show_perf")
