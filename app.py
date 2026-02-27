@@ -4,6 +4,9 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import torch
+import joblib
+from pathlib import Path
 
 from bs.pricing import calculate_black_scholes_price
 from bs.greeks import (
@@ -12,6 +15,7 @@ from bs.greeks import (
 )
 from bs.utils import monte_carlo_pricing
 from analysis.sensitivity_grid import generate_price_grid
+from rl_hedging.model import DeltaNet
 
 
 # ----------------------------
@@ -29,6 +33,25 @@ page = st.sidebar.radio(
     ["Black–Scholes", "Monte Carlo", "RL Hedging (ML)"],
     key="page_nav"
 )
+
+
+@st.cache_resource
+def load_delta_model_and_scaler(model_path, scaler_path, device):
+    model = DeltaNet().to(device)
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.eval()
+    scaler = joblib.load(scaler_path)
+    return model, scaler
+
+
+def predict_call_delta_batch(model, scaler, device, log_moneyness, time_to_maturity, volatility):
+    features = np.column_stack([log_moneyness, time_to_maturity, volatility])
+    features_scaled = scaler.transform(features)
+    x = torch.tensor(features_scaled, dtype=torch.float32, device=device)
+    with torch.no_grad():
+        preds = model(x).cpu().numpy().reshape(-1)
+    return np.clip(preds, 0.0, 1.0)
 
 
 # ============================
@@ -404,7 +427,7 @@ elif page == "Monte Carlo":
 # ============================
 else:
     st.header("🤖 AI Hedging Experience Engine")
-    st.markdown("*Compare Classical Delta Hedging vs RL-Powered Intelligent Hedging*")
+    st.markdown("*Classical Black–Scholes Delta vs Neural Network Delta Approximation*")
 
     st.sidebar.header("RL Hedging Parameters")
     st.sidebar.caption("Ranges tuned to the core ML training regime.")
@@ -428,10 +451,10 @@ else:
     st.sidebar.header("Strategy")
     rl_strategy_mode = st.sidebar.selectbox(
         "Choose Strategy",
-        ["Classical Delta Hedge Benchmark", "RL Hedging Agent", "Comparison Mode ⭐"],
-        index=2,
+        ["ML Delta"],
+        index=0,
         key="rl_strategy_mode",
-        help="Classical: Traditional Black-Scholes delta hedging | RL: AI-powered hedging | Comparison: Side-by-side analysis",
+        help="Current active strategy: neural-network delta approximation.",
     )
 
     st.sidebar.header("Visualization")
@@ -469,22 +492,126 @@ else:
     st.caption(f"Mode: {rl_strategy_mode}")
 
     if run_rl_simulation:
-        st.info("✨ Simulation results will appear here once functionality is implemented")
+        model_path = Path("delta_model.pt")
+        scaler_path = Path("scaler.pkl")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        if rl_show_path:
-            st.markdown("### 📈 Stock Price Trajectory")
-            st.caption("Path visualization will appear here")
+        if not model_path.exists() or not scaler_path.exists():
+            st.error(
+                "Model artifacts not found. Train first to create `delta_model.pt` and `scaler.pkl`."
+            )
+        else:
+            model, scaler = load_delta_model_and_scaler(str(model_path), str(scaler_path), device)
 
-        if rl_show_hedge:
-            st.markdown("### 🎯 Hedge Ratio Evolution")
-            st.caption("Hedge ratio evolution will appear here")
+            log_m = np.log(rl_S0 / rl_K)
+            bs_call_delta = calculate_delta(rl_S0, rl_K, rl_T, rl_r, rl_sigma, "call")
+            ml_call_delta = predict_call_delta_batch(
+                model=model,
+                scaler=scaler,
+                device=device,
+                log_moneyness=np.array([log_m]),
+                time_to_maturity=np.array([rl_T]),
+                volatility=np.array([rl_sigma]),
+            )[0]
 
-        if rl_show_perf:
-            st.markdown("### 📊 Performance Summary")
-            col_perf1, col_perf2, col_perf3 = st.columns(3)
-            with col_perf1:
-                st.metric("Classical RON", "—", help="Return on Notional for delta hedging")
-            with col_perf2:
-                st.metric("RL Agent RON", "—", help="Return on Notional for AI hedging")
-            with col_perf3:
-                st.metric("Improvement", "—", help="Relative performance gain")
+            if rl_option_type == "Put":
+                bs_delta = bs_call_delta - 1.0
+                ml_delta = ml_call_delta - 1.0
+            else:
+                bs_delta = bs_call_delta
+                ml_delta = ml_call_delta
+
+            abs_error = abs(ml_delta - bs_delta)
+
+            st.subheader("Model Inference Snapshot")
+            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+            metric_col1.metric("Black-Scholes Delta", f"{bs_delta:.6f}")
+            metric_col2.metric("ML Predicted Delta", f"{ml_delta:.6f}")
+            metric_col3.metric("Absolute Error", f"{abs_error:.6f}")
+            metric_col4.metric("Error (bps)", f"{abs_error * 10000:.2f}")
+
+            spot_grid = np.linspace(0.6 * rl_K, 1.4 * rl_K, 120)
+            log_m_grid = np.log(spot_grid / rl_K)
+            ttm_grid = np.full_like(spot_grid, rl_T, dtype=float)
+            vol_grid = np.full_like(spot_grid, rl_sigma, dtype=float)
+
+            ml_call_grid = predict_call_delta_batch(
+                model=model,
+                scaler=scaler,
+                device=device,
+                log_moneyness=log_m_grid,
+                time_to_maturity=ttm_grid,
+                volatility=vol_grid,
+            )
+            bs_call_grid = np.array(
+                [calculate_delta(s, rl_K, rl_T, rl_r, rl_sigma, "call") for s in spot_grid]
+            )
+
+            if rl_option_type == "Put":
+                ml_delta_grid = ml_call_grid - 1.0
+                bs_delta_grid = bs_call_grid - 1.0
+            else:
+                ml_delta_grid = ml_call_grid
+                bs_delta_grid = bs_call_grid
+
+            if rl_show_path:
+                st.markdown("### 📈 Delta Curve vs Spot")
+                fig_curve = go.Figure()
+                fig_curve.add_trace(
+                    go.Scatter(
+                        x=spot_grid,
+                        y=bs_delta_grid,
+                        mode="lines",
+                        name="Black-Scholes Delta",
+                        line=dict(color="royalblue", width=3),
+                    )
+                )
+                fig_curve.add_trace(
+                    go.Scatter(
+                        x=spot_grid,
+                        y=ml_delta_grid,
+                        mode="lines",
+                        name="ML Delta",
+                        line=dict(color="darkorange", width=2, dash="dash"),
+                    )
+                )
+                fig_curve.update_layout(
+                    title=f"{rl_option_type} Delta Approximation (T={rl_T:.2f}, σ={rl_sigma:.2f})",
+                    xaxis_title="Spot Price ($)",
+                    yaxis_title="Delta",
+                    hovermode="x unified",
+                    height=420,
+                )
+                st.plotly_chart(fig_curve, use_container_width=True)
+
+            if rl_show_hedge:
+                st.markdown("### 🎯 Delta Error by Spot")
+                error_grid = ml_delta_grid - bs_delta_grid
+                fig_error = go.Figure(
+                    data=go.Scatter(
+                        x=spot_grid,
+                        y=error_grid,
+                        mode="lines",
+                        line=dict(color="crimson", width=2),
+                        name="ML - BS",
+                    )
+                )
+                fig_error.add_hline(y=0.0, line_dash="dot", line_color="gray")
+                fig_error.update_layout(
+                    xaxis_title="Spot Price ($)",
+                    yaxis_title="Delta Error",
+                    height=320,
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_error, use_container_width=True)
+
+            if rl_show_perf:
+                st.markdown("### 📊 Performance Summary")
+                mae = np.mean(np.abs(ml_delta_grid - bs_delta_grid))
+                rmse = np.sqrt(np.mean((ml_delta_grid - bs_delta_grid) ** 2))
+                max_err = np.max(np.abs(ml_delta_grid - bs_delta_grid))
+
+                col_perf1, col_perf2, col_perf3 = st.columns(3)
+                col_perf1.metric("MAE", f"{mae:.6f}")
+                col_perf2.metric("RMSE", f"{rmse:.6f}")
+                col_perf3.metric("Max |Error|", f"{max_err:.6f}")
