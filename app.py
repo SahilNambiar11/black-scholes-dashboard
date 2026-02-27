@@ -13,6 +13,7 @@ from bs.greeks import (
 from bs.utils import monte_carlo_pricing
 from analysis.sensitivity_grid import generate_price_grid
 
+
 # ----------------------------
 # Page setup
 # ----------------------------
@@ -20,29 +21,38 @@ st.set_page_config(page_title="Black–Scholes Dashboard", layout="wide")
 st.title("Options Research Dashboard")
 
 # ----------------------------
-# Create tabs for navigation
+# Navigation (single-page render so sidebar stays page-specific)
 # ----------------------------
-tab_bs, tab_mc, tab_ml = st.tabs(["Black–Scholes", "Monte Carlo", "RL Hedging (ML)"])
+st.sidebar.title("Navigation")
+page = st.sidebar.radio(
+    "Go to",
+    ["Black–Scholes", "Monte Carlo", "RL Hedging (ML)"],
+    key="page_nav"
+)
+
 
 # ============================
-# BLACK-SCHOLES TAB
+# BLACK-SCHOLES PAGE
 # ============================
-with tab_bs:
-    # ----------------------------
-    # Sidebar inputs
-    # ----------------------------
+if page == "Black–Scholes":
     st.sidebar.header("Option Parameters")
 
-    S = st.sidebar.number_input("Spot Price ($)", value=100.0, min_value=0.01)
-    K = st.sidebar.number_input("Strike Price ($)", value=100.0, min_value=0.01)
-    T = st.sidebar.number_input("Time to Maturity (Years)", value=1.0, min_value=0.01)
-    r = st.sidebar.number_input("Risk-free Rate (%)", value=5.0) / 100
-    sigma = st.sidebar.number_input("Volatility (%)", value=20.0) / 100
-    option_type = st.sidebar.selectbox("Option Type", ["call", "put"])
+    S = st.sidebar.number_input("Spot Price ($)", value=100.0, min_value=0.01, key="bs_s")
+    K = st.sidebar.number_input("Strike Price ($)", value=100.0, min_value=0.01, key="bs_k")
+    T = st.sidebar.number_input("Time to Maturity (Years)", value=1.0, min_value=0.01, key="bs_t")
+    r = st.sidebar.number_input("Risk-free Rate (%)", value=5.0, key="bs_r") / 100
+    sigma = st.sidebar.number_input("Volatility (%)", value=20.0, key="bs_sigma") / 100
+    option_type = st.sidebar.selectbox("Option Type", ["call", "put"], key="bs_option_type")
 
-    # ----------------------------
-    # Single-point valuation
-    # ----------------------------
+    st.sidebar.header("Sensitivity Heatmap")
+    spot_pct_min, spot_pct_max = st.sidebar.slider(
+        "Spot Price Change (%)", -80, 80, (-50, 50), key="bs_spot_range"
+    )
+    sigma_min, sigma_max = st.sidebar.slider(
+        "Volatility Range (%)", 1, 200, (10, 50), key="bs_vol_range"
+    )
+    grid_size = st.sidebar.slider("Grid Resolution", 10, 40, 20, key="bs_grid")
+
     st.subheader("Single-Point Valuation")
 
     price = calculate_black_scholes_price(S, K, T, r, sigma, option_type)
@@ -52,11 +62,9 @@ with tab_bs:
     theta = calculate_theta(S, K, T, r, sigma, option_type)
     rho = calculate_rho(S, K, T, r, sigma, option_type)
 
-    # Display Greeks in two columns
     col1, col2, col3 = st.columns(3)
     col1.metric("Option Price", f"${price:.2f}")
 
-    # Greeks in columns
     st.markdown("### Greeks")
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -68,7 +76,6 @@ with tab_bs:
     with col3:
         st.metric("Rho (ρ)", f"{rho:.4f}", help="Sensitivity to interest rates")
 
-    # Optional expandable explanation
     with st.expander("What are the Greeks?"):
         st.markdown("""
         - **Delta (Δ):** How much the option price moves if the stock moves $1  
@@ -78,49 +85,28 @@ with tab_bs:
         - **Rho (ρ):** How sensitive the option is to changes in interest rates
         """)
 
-
-    # ----------------------------
-    # Sensitivity controls
-    # ----------------------------
-    st.sidebar.header("Sensitivity Heatmap")
-    spot_pct_min, spot_pct_max = st.sidebar.slider(
-        "Spot Price Change (%)", -80, 80, (-50, 50)
-    )
-    sigma_min, sigma_max = st.sidebar.slider(
-        "Volatility Range (%)", 1, 200, (10, 50)
-    )
-    grid_size = st.sidebar.slider("Grid Resolution", 10, 40, 20)
-
-    # ----------------------------
-    # Generate grids
-    # ----------------------------
     spot_prices, volatilities, call_price_grid, put_price_grid = generate_price_grid(
-        S=S, K=K, T=T, r=r, sigma=sigma, option_type=option_type,
+        S=S,
+        K=K,
+        T=T,
+        r=r,
+        sigma=sigma,
+        option_type=option_type,
         spot_pct_range=(spot_pct_min / 100, spot_pct_max / 100),
         sigma_range=(sigma_min / 100, sigma_max / 100),
-        grid_size=grid_size
+        grid_size=grid_size,
     )
 
-    # ----------------------------
-    # Parity calculations
-    # ----------------------------
     parity_rhs = np.broadcast_to(
         spot_prices[None, :] - K * np.exp(-r * T),
-        call_price_grid.shape
+        call_price_grid.shape,
     )
     parity_error = np.abs(call_price_grid - put_price_grid - parity_rhs)
 
-    # ----------------------------
-    # Select grid to display
-    # ----------------------------
     price_grid = call_price_grid if option_type == "call" else put_price_grid
     st.subheader(f"{option_type.capitalize()} Option Price Sensitivity (Spot × Volatility)")
 
-    # ----------------------------
-    # Attach hover data
-    # ----------------------------
     customdata = np.stack([call_price_grid, put_price_grid, parity_rhs, parity_error], axis=-1)
-
     fig = px.imshow(
         price_grid,
         x=np.round(spot_prices, 2),
@@ -139,13 +125,10 @@ with tab_bs:
             "Put Price: %{customdata[1]:.2f}<br>"
             "Parity RHS: %{customdata[2]:.2f}<br>"
             "Parity Error: %{customdata[3]:.2e}"
-        )
+        ),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ----------------------------
-    # Heatmap diagnostics
-    # ----------------------------
     st.subheader("Heatmap Diagnostics")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Min Price", f"{np.nanmin(price_grid):.2f}")
@@ -153,12 +136,8 @@ with tab_bs:
     col3.metric("Price Range", f"{(np.nanmax(price_grid) - np.nanmin(price_grid)):.2f}")
     col4.metric("Mean Price", f"{np.nanmean(price_grid):.2f}")
 
-    # ----------------------------
-    # Advanced Sensitivity Table
-    # ----------------------------
     st.subheader("Advanced Sensitivity Table")
     with st.expander("Show Detailed Table (Spot × Volatility)"):
-        # Flatten grids for table
         spot_flat = np.repeat(spot_prices, len(volatilities))
         vol_flat = np.tile(volatilities, len(spot_prices))
         call_flat = call_price_grid.flatten()
@@ -166,242 +145,220 @@ with tab_bs:
         parity_rhs_flat = parity_rhs.flatten()
         parity_err_flat = parity_error.flatten()
 
-        # Optional: compute Delta/Gamma
-        delta_flat = np.array([calculate_delta(s, K, T, r, sigma_val, "call")
-                               for s, sigma_val in zip(spot_flat, vol_flat)])
-        gamma_flat = np.array([calculate_gamma(s, K, T, r, sigma_val)
-                               for s, sigma_val in zip(spot_flat, vol_flat)])
+        delta_flat = np.array([
+            calculate_delta(s, K, T, r, sigma_val, "call")
+            for s, sigma_val in zip(spot_flat, vol_flat)
+        ])
+        gamma_flat = np.array([
+            calculate_gamma(s, K, T, r, sigma_val)
+            for s, sigma_val in zip(spot_flat, vol_flat)
+        ])
 
-        df = pd.DataFrame({
-            "Spot": spot_flat,
-            "Volatility": vol_flat,
-            "Call Price": call_flat,
-            "Put Price": put_flat,
-            "Parity RHS": parity_rhs_flat,
-            "Parity Error": parity_err_flat,
-            "Delta": delta_flat,
-            "Gamma": gamma_flat
-        })
-
-        st.dataframe(df.style.format({
-            "Call Price": "{:.2f}",
-            "Put Price": "{:.2f}",
-            "Parity RHS": "{:.2f}",
-            "Parity Error": "{:.2e}",
-            "Delta": "{:.4f}",
-            "Gamma": "{:.4f}"
-        }))
-
-# ============================
-# MONTE CARLO TAB
-# ============================
-with tab_mc:
-    st.header("Monte Carlo Option Pricing")
-    st.markdown("""
-    This tab uses Monte Carlo simulation to price European call options by simulating stock price paths 
-    using geometric Brownian motion. The method is particularly useful for understanding option value 
-    distributions and validating Black-Scholes results.
-    """)
-
-    # ----------------------------
-    # Input section
-    # ----------------------------
-    st.subheader("Simulation Parameters")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        mc_S0 = st.number_input("Spot Price (S₀)", value=100.0, min_value=0.01, key="mc_spot")
-        mc_r = st.number_input("Risk-free Rate (%)", value=5.0, key="mc_rate") / 100
-        mc_sigma = st.number_input("Volatility (%)", value=20.0, key="mc_sigma") / 100
-    
-    with col2:
-        mc_T = st.number_input("Time to Maturity (Years)", value=1.0, min_value=0.01, key="mc_T")
-        mc_N = st.number_input("Number of Time Steps", value=252, min_value=1, step=10, key="mc_N")
-        mc_M = st.number_input("Number of Simulations", value=10000, min_value=100, step=1000, key="mc_M")
-    
-    with col3:
-        mc_strikes_input = st.text_area(
-            "Strike Prices (comma-separated, e.g., 90, 100, 110)",
-            value="90, 100, 110",
-            key="mc_strikes"
+        df = pd.DataFrame(
+            {
+                "Spot": spot_flat,
+                "Volatility": vol_flat,
+                "Call Price": call_flat,
+                "Put Price": put_flat,
+                "Parity RHS": parity_rhs_flat,
+                "Parity Error": parity_err_flat,
+                "Delta": delta_flat,
+                "Gamma": gamma_flat,
+            }
         )
-    
-    # ----------------------------
-    # Parse strikes input
-    # ----------------------------
+
+        st.dataframe(
+            df.style.format(
+                {
+                    "Call Price": "{:.2f}",
+                    "Put Price": "{:.2f}",
+                    "Parity RHS": "{:.2f}",
+                    "Parity Error": "{:.2e}",
+                    "Delta": "{:.4f}",
+                    "Gamma": "{:.4f}",
+                }
+            )
+        )
+
+
+# ============================
+# MONTE CARLO PAGE
+# ============================
+elif page == "Monte Carlo":
+    st.header("Monte Carlo Option Pricing")
+    st.markdown(
+        """
+    This page uses Monte Carlo simulation to price European call options by simulating stock price paths
+    using geometric Brownian motion. The method is particularly useful for understanding option value
+    distributions and validating Black-Scholes results.
+    """
+    )
+
+    st.sidebar.header("Monte Carlo Parameters")
+    mc_S0 = st.sidebar.number_input("Spot Price (S₀)", value=100.0, min_value=0.01, key="mc_spot")
+    mc_r = st.sidebar.number_input("Risk-free Rate (%)", value=5.0, key="mc_rate") / 100
+    mc_sigma = st.sidebar.number_input("Volatility (%)", value=20.0, key="mc_sigma") / 100
+    mc_T = st.sidebar.number_input("Time to Maturity (Years)", value=1.0, min_value=0.01, key="mc_T")
+    mc_N = st.sidebar.number_input("Number of Time Steps", value=252, min_value=1, step=10, key="mc_N")
+    mc_M = st.sidebar.number_input("Number of Simulations", value=10000, min_value=100, step=1000, key="mc_M")
+    mc_strikes_input = st.sidebar.text_area(
+        "Strike Prices (comma-separated)",
+        value="90, 100, 110",
+        key="mc_strikes",
+    )
+
     try:
-        mc_strikes = np.array([float(x.strip()) for x in mc_strikes_input.split(',')])
+        mc_strikes = np.array([float(x.strip()) for x in mc_strikes_input.split(",")])
         strikes_valid = True
     except ValueError:
         st.error("Invalid strike prices. Please enter numbers separated by commas.")
         strikes_valid = False
-    
-    # ----------------------------
-    # Run simulation button
-    # ----------------------------
-    run_simulation = st.button("Run Monte Carlo Simulation", key="run_mc")
-    
+
+    run_simulation = st.sidebar.button("Run Monte Carlo Simulation", key="run_mc", use_container_width=True)
+
     if run_simulation and strikes_valid:
-        # Run Monte Carlo pricing
         with st.spinner("Running simulation..."):
-            # Set random seed for reproducibility
             np.random.seed(42)
             mc_results = monte_carlo_pricing(mc_S0, mc_r, mc_sigma, mc_T, mc_strikes, mc_N, mc_M)
-        
+
         st.success("Simulation complete!")
-        
-        # ----------------------------
-        # Results table
-        # ----------------------------
+
         st.subheader("Option Pricing Results")
-        results_df = pd.DataFrame({
-            "Strike": mc_results['strikes'],
-            "MC Price": mc_results['prices'],
-            "Std Error": mc_results['std_errors'],
-            "95% CI Lower": mc_results['prices'] - 1.96 * mc_results['std_errors'],
-            "95% CI Upper": mc_results['prices'] + 1.96 * mc_results['std_errors'],
-        })
-        
-        st.dataframe(
-            results_df.style.format({
-                "Strike": "{:.2f}",
-                "MC Price": "{:.4f}",
-                "Std Error": "{:.4f}",
-                "95% CI Lower": "{:.4f}",
-                "95% CI Upper": "{:.4f}"
-            }),
-            use_container_width=True
+        results_df = pd.DataFrame(
+            {
+                "Strike": mc_results["strikes"],
+                "MC Price": mc_results["prices"],
+                "Std Error": mc_results["std_errors"],
+                "95% CI Lower": mc_results["prices"] - 1.96 * mc_results["std_errors"],
+                "95% CI Upper": mc_results["prices"] + 1.96 * mc_results["std_errors"],
+            }
         )
-        
-        # ----------------------------
-        # Comparison with Black-Scholes
-        # ----------------------------
+
+        st.dataframe(
+            results_df.style.format(
+                {
+                    "Strike": "{:.2f}",
+                    "MC Price": "{:.4f}",
+                    "Std Error": "{:.4f}",
+                    "95% CI Lower": "{:.4f}",
+                    "95% CI Upper": "{:.4f}",
+                }
+            ),
+            use_container_width=True,
+        )
+
         st.subheader("Comparison with Black-Scholes")
-        
-        # Calculate Black-Scholes prices for the same strikes
-        bs_prices = np.array([
-            calculate_black_scholes_price(mc_S0, K, mc_T, mc_r, mc_sigma, "call")
-            for K in mc_results['strikes']
-        ])
-        
-        comparison_df = pd.DataFrame({
-            "Strike": mc_results['strikes'],
-            "MC Price": mc_results['prices'],
-            "BS Price": bs_prices,
-            "Difference": np.abs(mc_results['prices'] - bs_prices),
-            "% Difference": 100 * np.abs(mc_results['prices'] - bs_prices) / bs_prices
-        })
-        
-        st.dataframe(
-            comparison_df.style.format({
-                "Strike": "{:.2f}",
-                "MC Price": "{:.4f}",
-                "BS Price": "{:.4f}",
-                "Difference": "{:.4f}",
-                "% Difference": "{:.2f}%"
-            }),
-            use_container_width=True
+        bs_prices = np.array(
+            [
+                calculate_black_scholes_price(mc_S0, strike, mc_T, mc_r, mc_sigma, "call")
+                for strike in mc_results["strikes"]
+            ]
         )
-        
-        # ----------------------------
-        # Heatmap: Option prices across strikes
-        # ----------------------------
+
+        comparison_df = pd.DataFrame(
+            {
+                "Strike": mc_results["strikes"],
+                "MC Price": mc_results["prices"],
+                "BS Price": bs_prices,
+                "Difference": np.abs(mc_results["prices"] - bs_prices),
+                "% Difference": 100 * np.abs(mc_results["prices"] - bs_prices) / bs_prices,
+            }
+        )
+
+        st.dataframe(
+            comparison_df.style.format(
+                {
+                    "Strike": "{:.2f}",
+                    "MC Price": "{:.4f}",
+                    "BS Price": "{:.4f}",
+                    "Difference": "{:.4f}",
+                    "% Difference": "{:.2f}%",
+                }
+            ),
+            use_container_width=True,
+        )
+
         st.subheader("Option Prices Across Strikes (Heatmap)")
         st.markdown("Visualization of option prices for each strike (single row heatmap for clarity).")
-        
-        heatmap_data = np.array([mc_results['prices']])
-        
-        fig_heatmap = go.Figure(data=go.Heatmap(
-            z=heatmap_data,
-            x=np.round(mc_results['strikes'], 2),
-            y=["MC Price"],
-            colorscale="Viridis",
-            hovertemplate="Strike: %{x}<br>Price: %{z:.4f}<extra></extra>"
-        ))
-        
+
+        heatmap_data = np.array([mc_results["prices"]])
+        fig_heatmap = go.Figure(
+            data=go.Heatmap(
+                z=heatmap_data,
+                x=np.round(mc_results["strikes"], 2),
+                y=["MC Price"],
+                colorscale="Viridis",
+                hovertemplate="Strike: %{x}<br>Price: %{z:.4f}<extra></extra>",
+            )
+        )
         fig_heatmap.update_layout(
             title="Monte Carlo Option Prices by Strike",
             xaxis_title="Strike Price ($)",
             yaxis_title="",
             height=300,
-            width=1000
+            width=1000,
         )
-        
         st.plotly_chart(fig_heatmap, use_container_width=True)
-        
-        # ----------------------------
-        # Visualization: MC vs BS Comparison
-        # ----------------------------
+
         st.subheader("Monte Carlo vs Black-Scholes Comparison")
-        
         fig_comparison = go.Figure()
-        
-        # Add Monte Carlo prices
-        fig_comparison.add_trace(go.Scatter(
-            x=comparison_df['Strike'],
-            y=comparison_df['MC Price'],
-            mode='lines+markers',
-            name='Monte Carlo',
-            line=dict(color='blue', width=2),
-            marker=dict(size=8)
-        ))
-        
-        # Add Black-Scholes prices
-        fig_comparison.add_trace(go.Scatter(
-            x=comparison_df['Strike'],
-            y=comparison_df['BS Price'],
-            mode='lines+markers',
-            name='Black-Scholes',
-            line=dict(color='red', width=2, dash='dash'),
-            marker=dict(size=8)
-        ))
-        
+        fig_comparison.add_trace(
+            go.Scatter(
+                x=comparison_df["Strike"],
+                y=comparison_df["MC Price"],
+                mode="lines+markers",
+                name="Monte Carlo",
+                line=dict(color="blue", width=2),
+                marker=dict(size=8),
+            )
+        )
+        fig_comparison.add_trace(
+            go.Scatter(
+                x=comparison_df["Strike"],
+                y=comparison_df["BS Price"],
+                mode="lines+markers",
+                name="Black-Scholes",
+                line=dict(color="red", width=2, dash="dash"),
+                marker=dict(size=8),
+            )
+        )
         fig_comparison.update_layout(
             title="Option Prices: Monte Carlo vs Black-Scholes",
             xaxis_title="Strike Price ($)",
             yaxis_title="Option Price ($)",
             height=500,
-            hovermode='x unified'
+            hovermode="x unified",
         )
-        
         st.plotly_chart(fig_comparison, use_container_width=True)
-        
-        # ----------------------------
-        # Stock price path distribution
-        # ----------------------------
+
         st.subheader("Simulated Stock Price Paths")
         st.markdown("Distribution of final stock prices from all simulations.")
-        
-        # Create histogram of final prices
+
         fig_dist = go.Figure()
-        
-        fig_dist.add_trace(go.Histogram(
-            x=mc_results['final_prices'],
-            nbinsx=50,
-            name='Final Prices',
-            marker_color='rgba(0, 100, 200, 0.7)'
-        ))
-        
-        # Add vertical line for initial spot price
+        fig_dist.add_trace(
+            go.Histogram(
+                x=mc_results["final_prices"],
+                nbinsx=50,
+                name="Final Prices",
+                marker_color="rgba(0, 100, 200, 0.7)",
+            )
+        )
         fig_dist.add_vline(
             x=mc_S0,
             line_dash="dash",
             line_color="green",
             annotation_text=f"Initial S₀ = ${mc_S0:.2f}",
-            annotation_position="top right"
+            annotation_position="top right",
         )
-        
         fig_dist.update_layout(
             title="Distribution of Final Stock Prices (T years)",
             xaxis_title="Stock Price ($)",
             yaxis_title="Frequency",
             height=400,
-            showlegend=False
+            showlegend=False,
         )
-        
         st.plotly_chart(fig_dist, use_container_width=True)
-        
-        # Display final price statistics
+
         st.subheader("Final Stock Price Statistics")
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Mean", f"${np.mean(mc_results['final_prices']):.2f}")
@@ -409,70 +366,125 @@ with tab_mc:
         col3.metric("Min", f"${np.min(mc_results['final_prices']):.2f}")
         col4.metric("Max", f"${np.max(mc_results['final_prices']):.2f}")
         col5.metric("Initial S₀", f"${mc_S0:.2f}")
-    
+
     elif run_simulation and not strikes_valid:
         st.error("Please fix the strike prices before running the simulation.")
-    
-    # ----------------------------
-    # Information section
-    # ----------------------------
+
     with st.expander("About Monte Carlo Simulation"):
-        st.markdown("""
+        st.markdown(
+            """
         ### How It Works:
-        
+
         1. **Geometric Brownian Motion (GBM):** Stock prices follow the SDE:
            - dS = μS dt + σS dW
            - Where μ = r (risk-neutral drift), σ = volatility, dW = Wiener process increment
-        
+
         2. **Path Generation:** We simulate M paths over N time steps, each representing a possible future stock price trajectory.
-        
+
         3. **Payoff Calculation:** At maturity (T), compute the call option payoff: max(S_T - K, 0) for each path.
-        
+
         4. **Pricing:** Average payoffs across all paths and discount to present value using e^(-rT).
-        
+
         5. **Error Estimates:** Standard error decreases with O(1/√M), so more simulations = higher accuracy.
-        
+
         ### Advantages:
         - Can handle path-dependent options (American, Asian, Barrier, etc.)
         - Validates Black-Scholes theoretical prices
         - Provides confidence intervals and statistical measures
-        
+
         ### Disadvantages:
         - Computationally expensive for large M or N
         - Monte Carlo error inherent; Black-Scholes is exact for European options
-        """)
+        """
+        )
+
 
 # ============================
-# RL HEDGING (ML) TAB
+# RL HEDGING (ML) PAGE
 # ============================
-with tab_ml:
-    st.header("RL Hedging Strategy")
+else:
+    st.header("🤖 AI Hedging Experience Engine")
+    st.markdown("*Compare Classical Delta Hedging vs RL-Powered Intelligent Hedging*")
 
-    st.subheader("1) Simulation Parameters")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        rl_S0 = st.number_input("Spot Price ($)", min_value=0.01, value=100.0, key="rl_s0")
-        rl_K = st.number_input("Strike Price ($)", min_value=0.01, value=105.0, key="rl_k")
-    with col2:
-        rl_T = st.number_input("Time Horizon (Years)", min_value=0.01, value=0.25, key="rl_t")
-        rl_sigma = st.number_input("Volatility (%)", min_value=0.01, value=20.0, key="rl_sigma") / 100
-    with col3:
-        rl_r = st.number_input("Risk-free Rate (%)", value=5.0, key="rl_r") / 100
-        rl_option_type = st.selectbox("Option Type", ["call", "put"], key="rl_option_type")
+    st.sidebar.header("RL Hedging Parameters")
+    st.sidebar.caption("Ranges tuned to the core ML training regime.")
+    rl_S0 = st.sidebar.slider(
+        "Spot Price ($)", min_value=60.0, max_value=165.0, value=100.0, step=1.0, key="rl_s0"
+    )
+    rl_K = st.sidebar.slider(
+        "Strike Price ($)", min_value=80.0, max_value=120.0, value=100.0, step=1.0, key="rl_k"
+    )
+    rl_T = st.sidebar.slider(
+        "Time Horizon (Years)", min_value=0.02, max_value=1.0, value=0.25, step=0.01, key="rl_t"
+    )
+    rl_r = st.sidebar.slider(
+        "Risk-free Rate (%)", min_value=0.0, max_value=10.0, value=5.0, step=0.1, key="rl_r"
+    ) / 100
+    rl_sigma = st.sidebar.slider(
+        "Volatility (%)", min_value=10.0, max_value=60.0, value=20.0, step=1.0, key="rl_sigma"
+    ) / 100
+    rl_option_type = st.sidebar.selectbox("Option Type", ["Call", "Put"], key="rl_option_type")
 
-    st.subheader("2) Strategy Engine Controls")
-    rl_strategy_mode = st.selectbox(
-        "Strategy Mode",
-        [
-            "Classical Hedging Benchmark",
-            "RL Hedging Agent",
-            "Comparison Mode",
-        ],
+    st.sidebar.header("Strategy")
+    rl_strategy_mode = st.sidebar.selectbox(
+        "Choose Strategy",
+        ["Classical Delta Hedge Benchmark", "RL Hedging Agent", "Comparison Mode ⭐"],
         index=2,
         key="rl_strategy_mode",
+        help="Classical: Traditional Black-Scholes delta hedging | RL: AI-powered hedging | Comparison: Side-by-side analysis",
     )
 
-    st.markdown("**Visualization Mode**")
-    rl_show_path = st.checkbox("Path trajectory plot", value=True, key="rl_show_path")
-    rl_show_hedge = st.checkbox("Hedge ratio evolution", value=True, key="rl_show_hedge")
-    rl_show_perf = st.checkbox("Performance summary", value=True, key="rl_show_perf")
+    st.sidebar.header("Visualization")
+    rl_show_path = st.sidebar.checkbox(
+        "📈 Path Trajectory Plot",
+        value=True,
+        key="rl_show_path",
+        help="Show stock price evolution over time",
+    )
+    rl_show_hedge = st.sidebar.checkbox(
+        "🎯 Hedge Ratio Evolution",
+        value=True,
+        key="rl_show_hedge",
+        help="Show how hedge ratios change over time",
+    )
+    rl_show_perf = st.sidebar.checkbox(
+        "📊 Performance Summary",
+        value=True,
+        key="rl_show_perf",
+        help="Display metrics and statistics",
+    )
+
+    run_rl_simulation = st.sidebar.button(
+        "🚀 Run Hedging Simulation",
+        use_container_width=True,
+        key="run_rl_simulation",
+    )
+
+    st.subheader("Selected Configuration")
+    cfg_col1, cfg_col2, cfg_col3 = st.columns(3)
+    cfg_col1.metric("Spot / Strike", f"${rl_S0:.0f} / ${rl_K:.0f}")
+    cfg_col2.metric("T / r", f"{rl_T:.2f}y / {rl_r*100:.1f}%")
+    cfg_col3.metric("Vol / Type", f"{rl_sigma*100:.1f}% / {rl_option_type}")
+
+    st.caption(f"Mode: {rl_strategy_mode}")
+
+    if run_rl_simulation:
+        st.info("✨ Simulation results will appear here once functionality is implemented")
+
+        if rl_show_path:
+            st.markdown("### 📈 Stock Price Trajectory")
+            st.caption("Path visualization will appear here")
+
+        if rl_show_hedge:
+            st.markdown("### 🎯 Hedge Ratio Evolution")
+            st.caption("Hedge ratio evolution will appear here")
+
+        if rl_show_perf:
+            st.markdown("### 📊 Performance Summary")
+            col_perf1, col_perf2, col_perf3 = st.columns(3)
+            with col_perf1:
+                st.metric("Classical RON", "—", help="Return on Notional for delta hedging")
+            with col_perf2:
+                st.metric("RL Agent RON", "—", help="Return on Notional for AI hedging")
+            with col_perf3:
+                st.metric("Improvement", "—", help="Relative performance gain")
